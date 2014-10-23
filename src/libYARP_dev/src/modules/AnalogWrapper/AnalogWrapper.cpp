@@ -5,6 +5,7 @@
  * CopyPolicy: Released under the terms of the LGPLv2.1 or later, see LGPL.TXT
  */
 
+#include <sstream>
 #include <iostream>
 #include "AnalogWrapper.h"
 #include <yarp/dev/ControlBoardInterfaces.h>
@@ -193,8 +194,7 @@ void AnalogWrapper::setHandlers()
     for(unsigned int i=0;i<analogPorts.size(); i++)
     {
         std::string rpcPortName = analogPorts[i].port_name;
-        rpcPortName += "/rpc:i";
-//        analogPorts[i].port_name += ":o";
+        rpcPortName += "/rpc";
         AnalogServerHandler* ash = new AnalogServerHandler(rpcPortName.c_str());
         handlers.push_back(ash);
     }
@@ -285,74 +285,101 @@ bool AnalogWrapper::threadInit()
     return true;
 }
 
-void AnalogWrapper::setId(const std::string &i)
+void AnalogWrapper::setId(const std::string &id)
 {
-    id=i;
+    sensorId=id;
 }
 
 std::string AnalogWrapper::getId()
 {
-    return id;
+    return sensorId;
 }
 
-Bottle AnalogWrapper::getOptions()
+bool AnalogWrapper::checkForDeprecatedParams(yarp::os::Searchable &params)
 {
-    Bottle options;
-    options.addString("robotName, mandatory");
-    options.addString("deviceId, mandatory");
-    options.addString("period");
-    return options;
+//    check for deprecated params
+    bool correct = true;
+    if(!params.check("robotName", "name of the robot.") )
+    {
+        correct=false;
+        cerr << "ERROR: AnalogServer missing DEPRECATED parameter 'robotName', check your configuration file!! Quitting\n";
+    }
+
+    if(params.check("deviceId"))
+    {
+        string tmp(params.find("deviceId").asString());
+        cout << "AnalogWrapper Debug" << tmp;
+        setId(tmp);
+    }
+    else
+    {
+        correct=false;
+        cerr << "ERROR: AnalogServer missing DEPRECATED parameter 'deviceId', check your configuration file!! Quitting\n";
+    }
+
+    if(!correct)
+        return false;
+
+    std::cerr << "************************************************************************************************";
+    std::cerr << " WARNING: using deprecated configuration, parameters for creating port names should be:";
+    std::cerr << "          name:         full name of the port, like /robotName/deviceId/sensorType:o";
+    std::cerr << "          period:       refresh period of the broadcasted values in ms (optional, default 20ms)";
+    std::cerr << "************************************************************************************************";
+
+    // Create the list of ports
+    std::string robotName = params.find("robotName").asString().c_str();
+    streamingPortName ="/";
+    streamingPortName += robotName;
+    streamingPortName += "/" + this->sensorId + "/analog:o";
 }
 
 bool AnalogWrapper::open(yarp::os::Searchable &config)
 {
     Property params;
     params.fromString(config.toString().c_str());
+
+    std::cout << "\nAS\n\n" << params.toString() << "\n\n" << std::endl;
     bool correct=true;
 
     // Verify minimum set of parameters required
-    if(!params.check("robotName", "name of the robot.") )
-    {
-        correct=false;
-        cerr << "AnalogServer missing robot Name, check your configuration file!! Quitting\n";
-        return false;
-    }
+    streamingPortName.clear();
+    rpcPortName.clear();
 
-    if(params.check("deviceId"))
+    if (!config.check("name"))
     {
-      string tmp(params.find("deviceId").asString());
-      cout << "AnalogWrapper Debug" << tmp;
-      setId(tmp);
+        correct = checkForDeprecatedParams(config);
+        if(!correct)
+        {
+            std::cerr << "AnalogServer: missing 'name' parameter. Check you configuration file. Should look like:";
+            std::cerr << " name:         full name of the port, like /robotName/deviceId/sensorType:o";
+        }
     }
     else
     {
-        printf("no device Id found\n");
-        return false;
+        streamingPortName  = config.find("name").asString().c_str();
+        setId("AnalogServer");
     }
 
     if (params.check("period"))
     {
-        _rate=params.find("period").asInt();
+        _rate = params.find("period").asInt();
     }
     else
     {
-        _rate=20;
-        std::cout <<"Warning: part "<< id <<" using default period ("<<_rate<<")\n";
+        _rate = DEFAULT_THREAD_PERIOD;
+        std::cout <<"Warning: part " << sensorId << " using default period ("<<_rate<<")\n";
     }
 
-    // Create the list of ports
-    std::string robotName=params.find("robotName").asString().c_str();
-    std::string root_name;
-    root_name+="/";
-    root_name+=robotName;
-    root_name+= "/" + this->id + "/analog:o";
+    if(!correct)
+        return false;
+
 
     // port names are optional, do not check for correctness.
     if(!params.check("ports"))
     {
      // if there is no "ports" section open only 1 port and use name as is.
-        createPort((root_name ).c_str(), _rate );
-        cout << "opening port " << root_name.c_str();
+        createPort((streamingPortName ).c_str(), _rate );
+        cout << "opening port " << streamingPortName.c_str();
 
     }
     else
@@ -400,7 +427,7 @@ bool AnalogWrapper::open(yarp::os::Searchable &config)
             tmpPorts[k].length = portChannels;
             tmpPorts[k].offset = wBase;
             cout << "opening port " << ports->get(k).asString().c_str();
-            tmpPorts[k].port_name = root_name+ "/" + string(ports->get(k).asString().c_str());
+            tmpPorts[k].port_name = streamingPortName+ "/" + string(ports->get(k).asString().c_str());
 
             createPorts(tmpPorts, _rate);
             sumOfChannels+=portChannels;
@@ -412,6 +439,8 @@ bool AnalogWrapper::open(yarp::os::Searchable &config)
             return false;
         }
     }
+
+    threadInit();  // debug only TBR
     return true;
 }
 
@@ -461,12 +490,12 @@ void AnalogWrapper::run()
             }
             else
             {
-                printf("%s: vector size non valid: %lu\n", id.c_str(), static_cast<unsigned long> (lastDataRead.size()));
+                printf("%s: vector size non valid: %lu\n", sensorId.c_str(), static_cast<unsigned long> (lastDataRead.size()));
             }
         }
         else
         {
-             printf("%s: Sensor returned error\n", id.c_str());
+             printf("%s: Sensor returned error\n", sensorId.c_str());
         }
     }
 }
