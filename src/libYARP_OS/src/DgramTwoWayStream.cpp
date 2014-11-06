@@ -719,6 +719,13 @@ void DgramTwoWayStream::removeMonitor() {
 }
 
 
+bool DgramTwoWayStream::setTypeOfService(int tos) {
+    if(!dgram)
+        return false;
+    return (dgram->set_option(IPPROTO_IP, IP_TOS,
+                              (int *)&tos, (int)sizeof(tos) ) == 0);
+}
+
 #else
 
 int DgramTwoWayStreamDummySymbol = 42;

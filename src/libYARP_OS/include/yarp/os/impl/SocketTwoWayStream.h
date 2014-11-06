@@ -177,6 +177,8 @@ public:
         return true;
     }
 
+    virtual bool setTypeOfService(int tos);
+
 private:
     ACE_SOCK_Stream stream;
     bool haveWriteTimeout;
